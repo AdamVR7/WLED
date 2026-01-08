@@ -1,4 +1,4 @@
-name: Build WLED ESP32 (v0.15.3)
+name: Build WLED ESP32 (v0.15.3-no-v)
 
 on:
   workflow_dispatch:
@@ -7,15 +7,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout v0.15.3-no-v
         uses: actions/checkout@v4
         with:
+          ref: v0.15.3-no-v
           fetch-depth: 0
-
-      - name: Checkout tag v0.15.3
-        run: |
-          git fetch --tags
-          git checkout v0.15.3
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,5 +27,6 @@ jobs:
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WLED_0.15.3_ESP32_custom
+          name: WLED_0.15.3_ESP32_no_v
           path: .pio/build/esp32/firmware.bin
+
