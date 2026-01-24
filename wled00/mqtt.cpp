@@ -1,11 +1,33 @@
 #include "wled.h"
+#include <Ticker.h>
 
 /*
  * MQTT communication protocol for home automation
  */
 
 #ifndef WLED_DISABLE_MQTT
-#define MQTT_KEEP_ALIVE_TIME 60    // contact the MQTT broker every 60 seconds
+#define MQTT_KEEP_ALIVE_TIME 15         // было 60, быстрее ловит "мертвяк"
+#define MQTT_RECONNECT_DELAY_MS 5000    // попытка реконнекта раз в 5 сек
+
+bool initMqtt();                        // forward declaration
+static Ticker mqttReconnectTimer;
+
+static void mqttReconnectNow()
+{
+  // initMqtt() сам проверит mqttEnabled/mqttServer/WiFi
+  initMqtt();
+}
+
+static void onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
+{
+  // Важно: WLED может думать что сокет ещё жив. Тут принудительно запускаем цикл реконнекта.
+  // Если в твоей сборке это глобальная переменная — полезно сбросить:
+  // WLED_MQTT_CONNECTED = false;
+
+  mqttReconnectTimer.detach();
+  mqttReconnectTimer.once_ms(MQTT_RECONNECT_DELAY_MS, mqttReconnectNow);
+}
+
 
 static void parseMQTTBriPayload(char* payload)
 {
@@ -22,6 +44,7 @@ static void parseMQTTBriPayload(char* payload)
 
 static void onMqttConnect(bool sessionPresent)
 {
+  mqttReconnectTimer.detach();          // остановить попытки реконнекта
   //(re)subscribe to required topics
   char subuf[38];
 
@@ -196,6 +219,7 @@ bool initMqtt()
     if (!mqtt) return false;
     mqtt->onMessage(onMqttMessage);
     mqtt->onConnect(onMqttConnect);
+    mqtt->onDisconnect(onMqttDisconnect);   // <- ДОБАВИТЬ
   }
   if (mqtt->connected()) return true;
 
