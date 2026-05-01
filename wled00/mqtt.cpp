@@ -203,9 +203,13 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
 
   } else if (strcmp_P(topic, PSTR("/g")) == 0) {
     // Яркость от HomeKit (0-100) → WLED (0-255)
-    uint8_t in = (uint8_t)(strtoul(payloadStr, NULL, 10) * 2.55f);
+    uint8_t in = (uint8_t)roundf(strtoul(payloadStr, NULL, 10) * 2.55f);
     if (in == 0 && bri > 0) briLast = bri;
     bri = in;
+    // При яркости 0 публикуем OFF в головной топик
+    if (bri == 0) {
+      mqtt->publish(mqttDeviceTopic, 0, retainMqttMsg, "OFF");
+    }
     stateUpdated(CALL_MODE_DIRECT_CHANGE);
 
   } else if (strcmp_P(topic, PSTR("/h")) == 0) {
@@ -287,7 +291,7 @@ void publishMqtt()
   char subuf[48];
 
   // Яркость /g (0-100 для HomeKit) — без retain чтобы не было петли
-  sprintf_P(s, PSTR("%u"), (uint8_t)((bri / 255.0f) * 100.0f));
+  sprintf_P(s, PSTR("%u"), (uint8_t)roundf((bri / 255.0f) * 100.0f));
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/g"));
   mqtt->publish(subuf, 0, false, s);
