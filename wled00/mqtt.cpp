@@ -6,42 +6,87 @@
  */
 
 #ifndef WLED_DISABLE_MQTT
-#define MQTT_KEEP_ALIVE_TIME 15         // было 60, быстрее ловит "мертвяк"
-#define MQTT_RECONNECT_DELAY_MS 5000    // попытка реконнекта раз в 5 сек
 
-bool initMqtt();                        // forward declaration
+#define MQTT_KEEP_ALIVE_TIME 15       // было 60, быстрее ловит "мертвяк"
+#define MQTT_RECONNECT_DELAY_MS 5000  // попытка реконнекта раз в 5 сек
+
+bool initMqtt(); // forward declaration
+
 static Ticker mqttReconnectTimer;
 
 static void mqttReconnectNow()
 {
-  // initMqtt() сам проверит mqttEnabled/mqttServer/WiFi
   initMqtt();
 }
 
 static void onMqttDisconnect(AsyncMqttClientDisconnectReason reason)
 {
-  // Важно: WLED может думать что сокет ещё жив. Тут принудительно запускаем цикл реконнекта.
-  // Если в твоей сборке это глобальная переменная — полезно сбросить:
-  // WLED_MQTT_CONNECTED = false;
-
   mqttReconnectTimer.detach();
   mqttReconnectTimer.once_ms(MQTT_RECONNECT_DELAY_MS, mqttReconnectNow);
+}
+
+// Вспомогательная функция: RGB → Hue (0-360) и Saturation (0-100)
+static void rgbToHS(float &h, float &s)
+{
+  float r = colPri[0] / 255.0f;
+  float g = colPri[1] / 255.0f;
+  float b = colPri[2] / 255.0f;
+  float mx = MAX(r, MAX(g, b));
+  float mn = MIN(r, MIN(g, b));
+  float delta = mx - mn;
+
+  s = (mx > 0) ? (delta / mx * 100.0f) : 0.0f;
+  h = 0.0f;
+  if (delta > 0) {
+    if      (mx == r) h = 60.0f * fmodf((g - b) / delta, 6.0f);
+    else if (mx == g) h = 60.0f * ((b - r) / delta + 2.0f);
+    else              h = 60.0f * ((r - g) / delta + 4.0f);
+    if (h < 0) h += 360.0f;
+  }
+}
+
+// Вспомогательная функция: Hue + Saturation + текущая Value → RGB, W=0
+static void hsToRGB(float h, float s)
+{
+  // Берём Value из текущего максимального RGB канала
+  float mx = MAX(colPri[0], MAX(colPri[1], colPri[2])) / 255.0f;
+  if (mx == 0) mx = 1.0f; // если всё было нулевое — ставим полную яркость
+
+  s /= 100.0f;
+  float c = mx * s;
+  float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+  float m = mx - c;
+
+  float nr = 0, ng = 0, nb = 0;
+  if      (h < 60)  { nr = c; ng = x; }
+  else if (h < 120) { nr = x; ng = c; }
+  else if (h < 180) { ng = c; nb = x; }
+  else if (h < 240) { ng = x; nb = c; }
+  else if (h < 300) { nr = x; nb = c; }
+  else              { nr = c; nb = x; }
+
+  colPri[0] = (uint8_t)((nr + m) * 255);
+  colPri[1] = (uint8_t)((ng + m) * 255);
+  colPri[2] = (uint8_t)((nb + m) * 255);
+  colPri[3] = 0; // белый гасим при цветовой команде
 }
 
 static void parseMQTTBriPayload(char* payload)
 {
   if (strstr(payload, "ON") || strstr(payload, "on") || strstr(payload, "true")) {
-    // Проверяем существование пресета 101 перед применением
+    // Пытаемся применить пресет 101, если он существует
     String presetName;
     if (getPresetName(101, presetName)) {
       applyPreset(101, CALL_MODE_DIRECT_CHANGE);
     } else {
-      // Пресета нет — обычное включение
       bri = briLast;
       stateUpdated(CALL_MODE_DIRECT_CHANGE);
     }
   }
-  else if (strstr(payload, "T" ) || strstr(payload, "t" )) {toggleOnOff(); stateUpdated(CALL_MODE_DIRECT_CHANGE);}
+  else if (strstr(payload, "T") || strstr(payload, "t")) {
+    toggleOnOff();
+    stateUpdated(CALL_MODE_DIRECT_CHANGE);
+  }
   else {
     uint8_t in = strtoul(payload, NULL, 10);
     if (in == 0 && bri > 0) briLast = bri;
@@ -52,63 +97,82 @@ static void parseMQTTBriPayload(char* payload)
 
 static void onMqttConnect(bool sessionPresent)
 {
-  mqttReconnectTimer.detach();          // остановить попытки реконнекта
-  //(re)subscribe to required topics
+  mqttReconnectTimer.detach(); // остановить попытки реконнекта
+
   char subuf[38];
 
   if (mqttDeviceTopic[0] != 0) {
     strlcpy(subuf, mqttDeviceTopic, 33);
     mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttDeviceTopic, 33);
     strcat_P(subuf, PSTR("/col"));
     mqtt->subscribe(subuf, 0);
+
     strlcpy(subuf, mqttDeviceTopic, 33);
     strcat_P(subuf, PSTR("/api"));
+    mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttDeviceTopic, 33);
+    strcat_P(subuf, PSTR("/h"));
+    mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttDeviceTopic, 33);
+    strcat_P(subuf, PSTR("/s"));
     mqtt->subscribe(subuf, 0);
   }
 
   if (mqttGroupTopic[0] != 0) {
     strlcpy(subuf, mqttGroupTopic, 33);
     mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttGroupTopic, 33);
     strcat_P(subuf, PSTR("/col"));
     mqtt->subscribe(subuf, 0);
+
     strlcpy(subuf, mqttGroupTopic, 33);
     strcat_P(subuf, PSTR("/api"));
+    mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttGroupTopic, 33);
+    strcat_P(subuf, PSTR("/h"));
+    mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttGroupTopic, 33);
+    strcat_P(subuf, PSTR("/s"));
     mqtt->subscribe(subuf, 0);
   }
 
   UsermodManager::onMqttConnect(sessionPresent);
-
   DEBUG_PRINTLN(F("MQTT ready"));
   publishMqtt();
 }
-
 
 static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProperties properties, size_t len, size_t index, size_t total) {
   static char *payloadStr;
 
   DEBUG_PRINTF_P(PSTR("MQTT msg: %s\n"), topic);
 
-  // paranoia check to avoid npe if no payload
-  if (payload==nullptr) {
+  if (payload == nullptr) {
     DEBUG_PRINTLN(F("no payload -> leave"));
     return;
   }
 
-  if (index == 0) {                       // start (1st partial packet or the only packet)
-    if (payloadStr) delete[] payloadStr;  // fail-safe: release buffer
-    payloadStr = new char[total+1];       // allocate new buffer
+  if (index == 0) {
+    if (payloadStr) delete[] payloadStr;
+    payloadStr = new char[total+1];
   }
-  if (payloadStr == nullptr) return;      // buffer not allocated
+  if (payloadStr == nullptr) return;
 
-  // copy (partial) packet to buffer and 0-terminate it if it is last packet
   char* buff = payloadStr + index;
   memcpy(buff, payload, len);
-  if (index + len >= total) { // at end
-    payloadStr[total] = '\0'; // terminate c style string
+  if (index + len >= total) {
+    payloadStr[total] = '\0';
   } else {
     DEBUG_PRINTLN(F("MQTT partial packet received."));
-    return; // process next packet
+    return;
   }
+
   DEBUG_PRINTLN(payloadStr);
 
   size_t topicPrefixLen = strlen(mqttDeviceTopic);
@@ -119,7 +183,6 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     if (strncmp(topic, mqttGroupTopic, topicPrefixLen) == 0) {
       topic += topicPrefixLen;
     } else {
-      // Non-Wled Topic used here. Probably a usermod subscribed to this topic.
       UsermodManager::onMqttMessage(topic, payloadStr);
       delete[] payloadStr;
       payloadStr = nullptr;
@@ -127,98 +190,127 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     }
   }
 
-  //Prefix is stripped from the topic at this point
+  // Prefix is stripped from the topic at this point
 
   if (strcmp_P(topic, PSTR("/col")) == 0) {
     colorFromDecOrHexString(colPri, payloadStr);
     colorUpdated(CALL_MODE_DIRECT_CHANGE);
+
+  } else if (strcmp_P(topic, PSTR("/h")) == 0) {
+    // Hue от HomeKit (0-360) — пересчитываем RGB, белый гасим
+    float h = atof(payloadStr);
+    float dummy, s;
+    rgbToHS(dummy, s); // берём текущий Saturation
+    hsToRGB(h, s);
+    colorUpdated(CALL_MODE_DIRECT_CHANGE);
+
+  } else if (strcmp_P(topic, PSTR("/s")) == 0) {
+    // Saturation от HomeKit (0-100) — пересчитываем RGB, белый гасим
+    float h, dummy;
+    rgbToHS(h, dummy); // берём текущий Hue
+    float s = atof(payloadStr);
+    hsToRGB(h, s);
+    colorUpdated(CALL_MODE_DIRECT_CHANGE);
+
   } else if (strcmp_P(topic, PSTR("/api")) == 0) {
     if (requestJSONBufferLock(15)) {
-      if (payloadStr[0] == '{') { //JSON API
+      if (payloadStr[0] == '{') {
         deserializeJson(*pDoc, payloadStr);
         deserializeState(pDoc->as<JsonObject>());
-      } else { //HTTP API
-        String apireq = "win"; apireq += '&'; // reduce flash string usage
+      } else {
+        String apireq = "win"; apireq += '&';
         apireq += payloadStr;
         handleSet(nullptr, apireq);
       }
       releaseJSONBufferLock();
     }
+
   } else if (strlen(topic) != 0) {
-    // non standard topic, check with usermods
     UsermodManager::onMqttMessage(topic, payloadStr);
+
   } else {
     // topmost topic (just wled/MAC)
     parseMQTTBriPayload(payloadStr);
   }
+
   delete[] payloadStr;
   payloadStr = nullptr;
 }
 
 // Print adapter for flat buffers
-namespace { 
-class bufferPrint : public Print {
-  char* _buf;
-  size_t _size, _offset;
+namespace {
+  class bufferPrint : public Print {
+    char* _buf;
+    size_t _size, _offset;
   public:
-
-  bufferPrint(char* buf, size_t size) : _buf(buf), _size(size), _offset(0) {};
-
-  size_t write(const uint8_t *buffer, size_t size) {
-    size = std::min(size, _size - _offset);
-    memcpy(_buf + _offset, buffer, size);
-    _offset += size;
-    return size;
-  }
-
-  size_t write(uint8_t c) {
-    return this->write(&c, 1);
-  }
-
-  char* data() const { return _buf; }
-  size_t size() const { return _offset; }
-  size_t capacity() const { return _size; }
-};
+    bufferPrint(char* buf, size_t size) : _buf(buf), _size(size), _offset(0) {};
+    size_t write(const uint8_t *buffer, size_t size) {
+      size = std::min(size, _size - _offset);
+      memcpy(_buf + _offset, buffer, size);
+      _offset += size;
+      return size;
+    }
+    size_t write(uint8_t c) {
+      return this->write(&c, 1);
+    }
+    char* data() const { return _buf; }
+    size_t size() const { return _offset; }
+    size_t capacity() const { return _size; }
+  };
 }; // anonymous namespace
-
 
 void publishMqtt()
 {
   if (!WLED_MQTT_CONNECTED) return;
   DEBUG_PRINTLN(F("Publish MQTT"));
 
-  #ifndef USERMOD_SMARTNEST
+#ifndef USERMOD_SMARTNEST
   char s[10];
   char subuf[48];
 
+  // Яркость /g (0-255)
   sprintf_P(s, PSTR("%u"), bri);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/g"));
-  mqtt->publish(subuf, 0, retainMqttMsg, s);         // optionally retain message (#2263)
+  mqtt->publish(subuf, 0, retainMqttMsg, s);
 
-  //sprintf_P(s, PSTR("#%06X"), (colPri[3] << 24) | (colPri[0] << 16) | (colPri[1] << 8) | (colPri[2]));
+  // Цвет /c (#RRGGBBWW) — правильный порядок байт
   sprintf_P(s, PSTR("#%08X"), (colPri[0] << 24) | (colPri[1] << 16) | (colPri[2] << 8) | colPri[3]);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/c"));
-  mqtt->publish(subuf, 0, retainMqttMsg, s);         // optionally retain message (#2263)
+  mqtt->publish(subuf, 0, retainMqttMsg, s);
 
+  // Hue /h (0-360)
+  float h, sv;
+  rgbToHS(h, sv);
+  sprintf_P(s, PSTR("%.0f"), h);
+  strlcpy(subuf, mqttDeviceTopic, 33);
+  strcat_P(subuf, PSTR("/h"));
+  mqtt->publish(subuf, 0, retainMqttMsg, s);
+
+  // Saturation /s (0-100)
+  sprintf_P(s, PSTR("%.0f"), sv);
+  strlcpy(subuf, mqttDeviceTopic, 33);
+  strcat_P(subuf, PSTR("/s"));
+  mqtt->publish(subuf, 0, retainMqttMsg, s);
+
+  // Status /status
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/status"));
-  mqtt->publish(subuf, 0, true, "online");          // retain message for a LWT
+  mqtt->publish(subuf, 0, true, "online");
 
-  //// TODO: use a DynamicBufferList.  Requires a list-read-capable MQTT client API.
+  //// /v закомментирован намеренно
   //DynamicBuffer buf(1024);
   //bufferPrint pbuf(buf.data(), buf.size());
   //XML_response(pbuf);
   //strlcpy(subuf, mqttDeviceTopic, 33);
   //strcat_P(subuf, PSTR("/v"));
-  //mqtt->publish(subuf, 0, retainMqttMsg, buf.data(), pbuf.size());   // optionally retain message (#2263)
-  #endif
+  //mqtt->publish(subuf, 0, retainMqttMsg, buf.data(), pbuf.size());
+
+#endif
 }
 
-
 //HA autodiscovery was removed in favor of the native integration in HA v0.102.0
-
 bool initMqtt()
 {
   if (!mqttEnabled || mqttServer[0] == 0 || !WLED_CONNECTED) return false;
@@ -228,28 +320,32 @@ bool initMqtt()
     if (!mqtt) return false;
     mqtt->onMessage(onMqttMessage);
     mqtt->onConnect(onMqttConnect);
-    mqtt->onDisconnect(onMqttDisconnect);   // <- ДОБАВИТЬ
+    mqtt->onDisconnect(onMqttDisconnect);
   }
+
   if (mqtt->connected()) return true;
 
   DEBUG_PRINTLN(F("Reconnecting MQTT"));
+
   IPAddress mqttIP;
-  if (mqttIP.fromString(mqttServer)) //see if server is IP or domain
-  {
+  if (mqttIP.fromString(mqttServer)) {
     mqtt->setServer(mqttIP, mqttPort);
   } else {
     mqtt->setServer(mqttServer, mqttPort);
   }
+
   mqtt->setClientId(mqttClientID);
   if (mqttUser[0] && mqttPass[0]) mqtt->setCredentials(mqttUser, mqttPass);
 
-  #ifndef USERMOD_SMARTNEST
+#ifndef USERMOD_SMARTNEST
   strlcpy(mqttStatusTopic, mqttDeviceTopic, 33);
   strcat_P(mqttStatusTopic, PSTR("/status"));
-  mqtt->setWill(mqttStatusTopic, 0, true, "offline"); // LWT message
-  #endif
+  mqtt->setWill(mqttStatusTopic, 0, true, "offline");
+#endif
+
   mqtt->setKeepAlive(MQTT_KEEP_ALIVE_TIME);
   mqtt->connect();
   return true;
 }
+
 #endif
