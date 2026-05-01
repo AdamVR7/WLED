@@ -15,9 +15,10 @@ bool initMqtt(); // forward declaration
 static Ticker mqttReconnectTimer;
 
 // Последние опубликованные значения в шкале HomeKit — для защиты от петли
-static uint8_t  lastPublishedBri = 101; // невозможное значение (>100)
-static uint16_t lastPublishedHue = 361; // невозможное значение (>360)
-static uint8_t  lastPublishedSat = 101; // невозможное значение (>100)
+static uint8_t  lastPublishedBri = 101; // невозможное (>100)
+static uint16_t lastPublishedHue = 361; // невозможное (>360)
+static uint8_t  lastPublishedSat = 101; // невозможное (>100)
+static bool     lastPublishedOn  = false; // последнее опубликованное ON/OFF
 
 static void mqttReconnectNow()
 {
@@ -51,7 +52,6 @@ static void rgbToHS(float &h, float &s)
 }
 
 // Вспомогательная функция: Hue + Saturation → RGB с максимальной яркостью, W=0
-// Яркость управляется глобально через bri (/g топик)
 static void hsToRGB(float h, float s)
 {
   s /= 100.0f;
@@ -70,14 +70,16 @@ static void hsToRGB(float h, float s)
   colPri[0] = (uint8_t)((nr + m) * 255);
   colPri[1] = (uint8_t)((ng + m) * 255);
   colPri[2] = (uint8_t)((nb + m) * 255);
-  colPri[3] = 0; // белый гасим при цветовой команде
+  colPri[3] = 0;
 }
 
 static void parseMQTTBriPayload(char* payload)
 {
   if (strstr(payload, "ON") || strstr(payload, "on") || strstr(payload, "true")) {
-    // Применяем пресет 101 если существует, lastPublished не трогаем —
-    // после применения пресета publishMqtt обновит их правильными значениями
+    // Игнорируем эхо собственного ON
+    if (lastPublishedOn) {
+      return;
+    }
     String presetName;
     if (getPresetName(101, presetName)) {
       applyPreset(101, CALL_MODE_DIRECT_CHANGE);
@@ -85,6 +87,15 @@ static void parseMQTTBriPayload(char* payload)
       bri = briLast;
       stateUpdated(CALL_MODE_DIRECT_CHANGE);
     }
+  }
+  else if (strstr(payload, "OFF") || strstr(payload, "off") || strstr(payload, "false")) {
+    // Игнорируем эхо собственного OFF
+    if (!lastPublishedOn) {
+      return;
+    }
+    briLast = bri;
+    bri = 0;
+    stateUpdated(CALL_MODE_DIRECT_CHANGE);
   }
   else if (strstr(payload, "T") || strstr(payload, "t")) {
     toggleOnOff();
@@ -301,11 +312,12 @@ void publishMqtt()
   char s[10];
   char subuf[48];
 
-  // Головной топик ON/OFF
+  // Головной топик ON/OFF — с защитой от эха
+  lastPublishedOn = (bri > 0);
   strlcpy(subuf, mqttDeviceTopic, 33);
-  mqtt->publish(subuf, 0, retainMqttMsg, bri > 0 ? "ON" : "OFF");
+  mqtt->publish(subuf, 0, retainMqttMsg, lastPublishedOn ? "ON" : "OFF");
 
-  // Яркость /g (0-100) — без retain, сохраняем в шкале 0-100
+  // Яркость /g (0-100) — без retain, сравниваем в шкале 0-100
   lastPublishedBri = (uint8_t)roundf((bri / 255.0f) * 100.0f);
   sprintf_P(s, PSTR("%u"), lastPublishedBri);
   strlcpy(subuf, mqttDeviceTopic, 33);
