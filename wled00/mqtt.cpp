@@ -15,9 +15,10 @@ bool initMqtt(); // forward declaration
 static Ticker mqttReconnectTimer;
 
 // Последние опубликованные значения — для защиты от петли
-static uint8_t lastPublishedBri = 255;
-static uint16_t lastPublishedHue = 0;
-static uint8_t lastPublishedSat = 0;
+// Инициализируем невозможными значениями чтобы первая публикация всегда прошла
+static uint8_t  lastPublishedBri = 255;
+static uint16_t lastPublishedHue = 65535;
+static uint8_t  lastPublishedSat = 255;
 
 static void mqttReconnectNow()
 {
@@ -76,6 +77,11 @@ static void hsToRGB(float h, float s)
 static void parseMQTTBriPayload(char* payload)
 {
   if (strstr(payload, "ON") || strstr(payload, "on") || strstr(payload, "true")) {
+    // Сбрасываем кэш — пресет изменит значения и первая публикация
+    // обновит lastPublished корректно, петля не возникнет
+    lastPublishedBri = 255;
+    lastPublishedHue = 65535;
+    lastPublishedSat = 255;
     // Пытаемся применить пресет 101, если он существует
     String presetName;
     if (getPresetName(101, presetName)) {
@@ -307,6 +313,10 @@ void publishMqtt()
 #ifndef USERMOD_SMARTNEST
   char s[10];
   char subuf[48];
+
+  // Головной топик ON/OFF в зависимости от яркости
+  strlcpy(subuf, mqttDeviceTopic, 33);
+  mqtt->publish(subuf, 0, retainMqttMsg, bri > 0 ? "ON" : "OFF");
 
   // Яркость /g (0-100 для HomeKit) — без retain чтобы не было петли
   lastPublishedBri = (uint8_t)roundf((bri / 255.0f) * 100.0f);
