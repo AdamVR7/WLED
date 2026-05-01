@@ -14,9 +14,8 @@ bool initMqtt(); // forward declaration
 
 static Ticker mqttReconnectTimer;
 
-// Последние опубликованные значения — для защиты от петли
-// Инициализируем невозможными значениями чтобы первая публикация всегда прошла
-static uint8_t  lastPublishedBri = 255;
+// Последние опубликованные значения в шкале HomeKit — для защиты от петли
+static uint8_t  lastPublishedBri = 101; // невозможное значение (>100)
 static uint16_t lastPublishedHue = 65535;
 static uint8_t  lastPublishedSat = 255;
 
@@ -77,9 +76,8 @@ static void hsToRGB(float h, float s)
 static void parseMQTTBriPayload(char* payload)
 {
   if (strstr(payload, "ON") || strstr(payload, "on") || strstr(payload, "true")) {
-    // Сбрасываем кэш — пресет изменит значения и первая публикация
-    // обновит lastPublished корректно, петля не возникнет
-    lastPublishedBri = 255;
+    // Сбрасываем кэш невозможными значениями — пресет изменит всё
+    lastPublishedBri = 101;
     lastPublishedHue = 65535;
     lastPublishedSat = 255;
     // Пытаемся применить пресет 101, если он существует
@@ -213,14 +211,16 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     colorUpdated(CALL_MODE_DIRECT_CHANGE);
 
   } else if (strcmp_P(topic, PSTR("/g")) == 0) {
-    // Яркость от HomeKit (0-100) → WLED (0-255)
-    uint8_t in = (uint8_t)roundf(strtoul(payloadStr, NULL, 10) * 2.55f);
+    // Яркость от HomeKit (0-100) — сравниваем в той же шкале 0-100
+    uint8_t inPct = (uint8_t)strtoul(payloadStr, NULL, 10);
     // Игнорируем собственное эхо
-    if (in == lastPublishedBri) {
+    if (inPct == lastPublishedBri) {
       delete[] payloadStr;
       payloadStr = nullptr;
       return;
     }
+    // Конвертируем в 0-255 для WLED
+    uint8_t in = (uint8_t)roundf(inPct * 2.55f);
     if (in == 0 && bri > 0) briLast = bri;
     bri = in;
     if (bri == 0) mqtt->publish(mqttDeviceTopic, 0, retainMqttMsg, "OFF");
@@ -318,7 +318,7 @@ void publishMqtt()
   strlcpy(subuf, mqttDeviceTopic, 33);
   mqtt->publish(subuf, 0, retainMqttMsg, bri > 0 ? "ON" : "OFF");
 
-  // Яркость /g (0-100 для HomeKit) — без retain чтобы не было петли
+  // Яркость /g (0-100 для HomeKit) — без retain, сохраняем в шкале 0-100
   lastPublishedBri = (uint8_t)roundf((bri / 255.0f) * 100.0f);
   sprintf_P(s, PSTR("%u"), lastPublishedBri);
   strlcpy(subuf, mqttDeviceTopic, 33);
@@ -331,7 +331,7 @@ void publishMqtt()
   strcat_P(subuf, PSTR("/c"));
   mqtt->publish(subuf, 0, retainMqttMsg, s);
 
-  // Hue /h (0-360) — без retain чтобы не было петли
+  // Hue /h (0-360) — без retain
   float h, sv;
   rgbToHS(h, sv);
   lastPublishedHue = (uint16_t)roundf(h);
@@ -341,7 +341,7 @@ void publishMqtt()
   strcat_P(subuf, PSTR("/h"));
   mqtt->publish(subuf, 0, false, s);
 
-  // Saturation /s (0-100) — без retain чтобы не было петли
+  // Saturation /s (0-100) — без retain
   sprintf_P(s, PSTR("%u"), lastPublishedSat);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/s"));
