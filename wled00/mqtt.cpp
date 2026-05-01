@@ -45,17 +45,14 @@ static void rgbToHS(float &h, float &s)
   }
 }
 
-// Вспомогательная функция: Hue + Saturation + текущая Value → RGB, W=0
+// Вспомогательная функция: Hue + Saturation → RGB с максимальной яркостью, W=0
+// Яркость управляется глобально через bri (/g топик)
 static void hsToRGB(float h, float s)
 {
-  // Берём Value из текущего максимального RGB канала
-  float mx = MAX(colPri[0], MAX(colPri[1], colPri[2])) / 255.0f;
-  if (mx == 0) mx = 1.0f; // если всё было нулевое — ставим полную яркость
-
   s /= 100.0f;
-  float c = mx * s;
+  float c = s; // mx = 1.0 всегда — максимальная яркость канала
   float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
-  float m = mx - c;
+  float m = 1.0f - c;
 
   float nr = 0, ng = 0, nb = 0;
   if      (h < 60)  { nr = c; ng = x; }
@@ -289,33 +286,33 @@ void publishMqtt()
   char s[10];
   char subuf[48];
 
-  // Яркость /g (0-100 для HomeKit)
+  // Яркость /g (0-100 для HomeKit) — без retain чтобы не было петли
   sprintf_P(s, PSTR("%u"), (uint8_t)((bri / 255.0f) * 100.0f));
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/g"));
-  mqtt->publish(subuf, 0, retainMqttMsg, s);
+  mqtt->publish(subuf, 0, false, s);
 
-  // Цвет /c (#RRGGBBWW) — правильный порядок байт
+  // Цвет /c (#RRGGBBWW) — правильный порядок байт, с retain
   sprintf_P(s, PSTR("#%08X"), (colPri[0] << 24) | (colPri[1] << 16) | (colPri[2] << 8) | colPri[3]);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/c"));
   mqtt->publish(subuf, 0, retainMqttMsg, s);
 
-  // Hue /h (0-360)
+  // Hue /h (0-360) — без retain чтобы не было петли
   float h, sv;
   rgbToHS(h, sv);
   sprintf_P(s, PSTR("%.0f"), h);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/h"));
-  mqtt->publish(subuf, 0, retainMqttMsg, s);
+  mqtt->publish(subuf, 0, false, s);
 
-  // Saturation /s (0-100)
+  // Saturation /s (0-100) — без retain чтобы не было петли
   sprintf_P(s, PSTR("%.0f"), sv);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/s"));
-  mqtt->publish(subuf, 0, retainMqttMsg, s);
+  mqtt->publish(subuf, 0, false, s);
 
-  // Status /status
+  // Status /status — с retain
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/status"));
   mqtt->publish(subuf, 0, true, "online");
