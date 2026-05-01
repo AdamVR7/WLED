@@ -16,8 +16,8 @@ static Ticker mqttReconnectTimer;
 
 // Последние опубликованные значения в шкале HomeKit — для защиты от петли
 static uint8_t  lastPublishedBri = 101; // невозможное значение (>100)
-static uint16_t lastPublishedHue = 65535;
-static uint8_t  lastPublishedSat = 255;
+static uint16_t lastPublishedHue = 361; // невозможное значение (>360)
+static uint8_t  lastPublishedSat = 101; // невозможное значение (>100)
 
 static void mqttReconnectNow()
 {
@@ -55,7 +55,7 @@ static void rgbToHS(float &h, float &s)
 static void hsToRGB(float h, float s)
 {
   s /= 100.0f;
-  float c = s; // mx = 1.0 всегда — максимальная яркость канала
+  float c = s;
   float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
   float m = 1.0f - c;
 
@@ -76,11 +76,8 @@ static void hsToRGB(float h, float s)
 static void parseMQTTBriPayload(char* payload)
 {
   if (strstr(payload, "ON") || strstr(payload, "on") || strstr(payload, "true")) {
-    // Сбрасываем кэш невозможными значениями — пресет изменит всё
-    lastPublishedBri = 101;
-    lastPublishedHue = 65535;
-    lastPublishedSat = 255;
-    // Пытаемся применить пресет 101, если он существует
+    // Применяем пресет 101 если существует, lastPublished не трогаем —
+    // после применения пресета publishMqtt обновит их правильными значениями
     String presetName;
     if (getPresetName(101, presetName)) {
       applyPreset(101, CALL_MODE_DIRECT_CHANGE);
@@ -103,7 +100,7 @@ static void parseMQTTBriPayload(char* payload)
 
 static void onMqttConnect(bool sessionPresent)
 {
-  mqttReconnectTimer.detach(); // остановить попытки реконнекта
+  mqttReconnectTimer.detach();
 
   char subuf[38];
 
@@ -204,22 +201,17 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     }
   }
 
-  // Prefix is stripped from the topic at this point
-
   if (strcmp_P(topic, PSTR("/col")) == 0) {
     colorFromDecOrHexString(colPri, payloadStr);
     colorUpdated(CALL_MODE_DIRECT_CHANGE);
 
   } else if (strcmp_P(topic, PSTR("/g")) == 0) {
-    // Яркость от HomeKit (0-100) — сравниваем в той же шкале 0-100
     uint8_t inPct = (uint8_t)strtoul(payloadStr, NULL, 10);
-    // Игнорируем собственное эхо
     if (inPct == lastPublishedBri) {
       delete[] payloadStr;
       payloadStr = nullptr;
       return;
     }
-    // Конвертируем в 0-255 для WLED
     uint8_t in = (uint8_t)roundf(inPct * 2.55f);
     if (in == 0 && bri > 0) briLast = bri;
     bri = in;
@@ -227,9 +219,7 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     stateUpdated(CALL_MODE_DIRECT_CHANGE);
 
   } else if (strcmp_P(topic, PSTR("/h")) == 0) {
-    // Hue от HomeKit (0-360)
     uint16_t h = (uint16_t)roundf(atof(payloadStr));
-    // Игнорируем собственное эхо
     if (h == lastPublishedHue) {
       delete[] payloadStr;
       payloadStr = nullptr;
@@ -243,9 +233,7 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     }
 
   } else if (strcmp_P(topic, PSTR("/s")) == 0) {
-    // Saturation от HomeKit (0-100)
     uint8_t s = (uint8_t)roundf(atof(payloadStr));
-    // Игнорируем собственное эхо
     if (s == lastPublishedSat) {
       delete[] payloadStr;
       payloadStr = nullptr;
@@ -275,7 +263,6 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     UsermodManager::onMqttMessage(topic, payloadStr);
 
   } else {
-    // topmost topic (just wled/MAC)
     parseMQTTBriPayload(payloadStr);
   }
 
@@ -314,18 +301,18 @@ void publishMqtt()
   char s[10];
   char subuf[48];
 
-  // Головной топик ON/OFF в зависимости от яркости
+  // Головной топик ON/OFF
   strlcpy(subuf, mqttDeviceTopic, 33);
   mqtt->publish(subuf, 0, retainMqttMsg, bri > 0 ? "ON" : "OFF");
 
-  // Яркость /g (0-100 для HomeKit) — без retain, сохраняем в шкале 0-100
+  // Яркость /g (0-100) — без retain, сохраняем в шкале 0-100
   lastPublishedBri = (uint8_t)roundf((bri / 255.0f) * 100.0f);
   sprintf_P(s, PSTR("%u"), lastPublishedBri);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/g"));
   mqtt->publish(subuf, 0, false, s);
 
-  // Цвет /c (#RRGGBBWW) — правильный порядок байт, с retain
+  // Цвет /c (#RRGGBBWW) — с retain
   sprintf_P(s, PSTR("#%08X"), (colPri[0] << 24) | (colPri[1] << 16) | (colPri[2] << 8) | colPri[3]);
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/c"));
@@ -363,7 +350,6 @@ void publishMqtt()
 #endif
 }
 
-//HA autodiscovery was removed in favor of the native integration in HA v0.102.0
 bool initMqtt()
 {
   if (!mqttEnabled || mqttServer[0] == 0 || !WLED_CONNECTED) return false;
