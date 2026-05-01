@@ -114,6 +114,10 @@ static void onMqttConnect(bool sessionPresent)
     mqtt->subscribe(subuf, 0);
 
     strlcpy(subuf, mqttDeviceTopic, 33);
+    strcat_P(subuf, PSTR("/g"));
+    mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttDeviceTopic, 33);
     strcat_P(subuf, PSTR("/h"));
     mqtt->subscribe(subuf, 0);
 
@@ -132,6 +136,10 @@ static void onMqttConnect(bool sessionPresent)
 
     strlcpy(subuf, mqttGroupTopic, 33);
     strcat_P(subuf, PSTR("/api"));
+    mqtt->subscribe(subuf, 0);
+
+    strlcpy(subuf, mqttGroupTopic, 33);
+    strcat_P(subuf, PSTR("/g"));
     mqtt->subscribe(subuf, 0);
 
     strlcpy(subuf, mqttGroupTopic, 33);
@@ -196,21 +204,34 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
     colorFromDecOrHexString(colPri, payloadStr);
     colorUpdated(CALL_MODE_DIRECT_CHANGE);
 
+  } else if (strcmp_P(topic, PSTR("/g")) == 0) {
+    // Яркость от HomeKit (0-100) → WLED (0-255)
+    uint8_t in = (uint8_t)(strtoul(payloadStr, NULL, 10) * 2.55f);
+    if (in == 0 && bri > 0) briLast = bri;
+    bri = in;
+    stateUpdated(CALL_MODE_DIRECT_CHANGE);
+
   } else if (strcmp_P(topic, PSTR("/h")) == 0) {
-    // Hue от HomeKit (0-360) — пересчитываем RGB, белый гасим
+    // Hue от HomeKit (0-360)
+    // Гасим белый только если насыщенность значимая (>5%)
     float h = atof(payloadStr);
     float dummy, s;
-    rgbToHS(dummy, s); // берём текущий Saturation
-    hsToRGB(h, s);
-    colorUpdated(CALL_MODE_DIRECT_CHANGE);
+    rgbToHS(dummy, s);
+    if (s > 5.0f) {
+      hsToRGB(h, s);
+      colorUpdated(CALL_MODE_DIRECT_CHANGE);
+    }
 
   } else if (strcmp_P(topic, PSTR("/s")) == 0) {
-    // Saturation от HomeKit (0-100) — пересчитываем RGB, белый гасим
-    float h, dummy;
-    rgbToHS(h, dummy); // берём текущий Hue
+    // Saturation от HomeKit (0-100)
+    // Гасим белый только если насыщенность значимая (>5%)
     float s = atof(payloadStr);
-    hsToRGB(h, s);
-    colorUpdated(CALL_MODE_DIRECT_CHANGE);
+    float h, dummy;
+    rgbToHS(h, dummy);
+    if (s > 5.0f) {
+      hsToRGB(h, s);
+      colorUpdated(CALL_MODE_DIRECT_CHANGE);
+    }
 
   } else if (strcmp_P(topic, PSTR("/api")) == 0) {
     if (requestJSONBufferLock(15)) {
@@ -268,8 +289,8 @@ void publishMqtt()
   char s[10];
   char subuf[48];
 
-  // Яркость /g (0-255)
-  sprintf_P(s, PSTR("%u"), bri);
+  // Яркость /g (0-100 для HomeKit)
+  sprintf_P(s, PSTR("%u"), (uint8_t)((bri / 255.0f) * 100.0f));
   strlcpy(subuf, mqttDeviceTopic, 33);
   strcat_P(subuf, PSTR("/g"));
   mqtt->publish(subuf, 0, retainMqttMsg, s);
