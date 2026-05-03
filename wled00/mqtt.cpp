@@ -18,7 +18,7 @@ static Ticker mqttReconnectTimer;
 static uint8_t  lastPublishedBri = 101; // невозможное (>100)
 static uint16_t lastPublishedHue = 361; // невозможное (>360)
 static uint8_t  lastPublishedSat = 101; // невозможное (>100)
-static bool     lastPublishedOn  = false; // последнее опубликованное ON/OFF
+static bool     lastPublishedOn  = false;
 
 static void mqttReconnectNow()
 {
@@ -73,13 +73,22 @@ static void hsToRGB(float h, float s)
   colPri[3] = 0;
 }
 
+// Применить пресет 101 (белый) или fallback цвет
+static void applyWhitePreset()
+{
+  String presetName;
+  if (getPresetName(101, presetName)) {
+    applyPreset(101, CALL_MODE_DIRECT_CHANGE);
+  } else {
+    colorFromDecOrHexString(colPri, (char*)"#CECECEFA");
+    colorUpdated(CALL_MODE_DIRECT_CHANGE);
+  }
+}
+
 static void parseMQTTBriPayload(char* payload)
 {
   if (strstr(payload, "ON") || strstr(payload, "on") || strstr(payload, "true")) {
-    // Игнорируем эхо собственного ON
-    if (lastPublishedOn) {
-      return;
-    }
+    if (lastPublishedOn) return;
     String presetName;
     if (getPresetName(101, presetName)) {
       applyPreset(101, CALL_MODE_DIRECT_CHANGE);
@@ -89,10 +98,7 @@ static void parseMQTTBriPayload(char* payload)
     }
   }
   else if (strstr(payload, "OFF") || strstr(payload, "off") || strstr(payload, "false")) {
-    // Игнорируем эхо собственного OFF
-    if (!lastPublishedOn) {
-      return;
-    }
+    if (!lastPublishedOn) return;
     briLast = bri;
     bri = 0;
     stateUpdated(CALL_MODE_DIRECT_CHANGE);
@@ -242,6 +248,7 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
       hsToRGB((float)h, s);
       colorUpdated(CALL_MODE_DIRECT_CHANGE);
     }
+    // s <= 5 — белый, ждём /s чтобы подтвердить
 
   } else if (strcmp_P(topic, PSTR("/s")) == 0) {
     uint8_t s = (uint8_t)roundf(atof(payloadStr));
@@ -250,9 +257,12 @@ static void onMqttMessage(char* topic, char* payload, AsyncMqttClientMessageProp
       payloadStr = nullptr;
       return;
     }
-    float h, dummy;
-    rgbToHS(h, dummy);
-    if (s > 5) {
+    if (s <= 5) {
+      // Белый — применяем пресет 101
+      applyWhitePreset();
+    } else {
+      float h, dummy;
+      rgbToHS(h, dummy);
       hsToRGB(h, (float)s);
       colorUpdated(CALL_MODE_DIRECT_CHANGE);
     }
@@ -312,12 +322,12 @@ void publishMqtt()
   char s[10];
   char subuf[48];
 
-  // Головной топик ON/OFF — с защитой от эха
+  // Головной топик ON/OFF
   lastPublishedOn = (bri > 0);
   strlcpy(subuf, mqttDeviceTopic, 33);
   mqtt->publish(subuf, 0, retainMqttMsg, lastPublishedOn ? "ON" : "OFF");
 
-  // Яркость /g (0-100) — без retain, сравниваем в шкале 0-100
+  // Яркость /g (0-100) — без retain
   lastPublishedBri = (uint8_t)roundf((bri / 255.0f) * 100.0f);
   sprintf_P(s, PSTR("%u"), lastPublishedBri);
   strlcpy(subuf, mqttDeviceTopic, 33);
